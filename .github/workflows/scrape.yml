@@ -1,0 +1,58 @@
+name: Scrape jobs
+
+# Cadence matches config.py's SCRAPE_CRON_SCHEDULE default (0 */6 * * *) -
+# keep these in sync if you ever change one. Every 6h gives 4 attempts
+# inside jobfound's 24h max_job_age_hours freshness window (see
+# scrapers/sources/jobfound.py), so one failed run doesn't let a job age
+# out and get permanently missed - see CLAUDE.md's "Read API"/scraper
+# sections for the full reasoning.
+#
+# Runs as its own isolated process, deliberately NOT inside the API
+# server (api/) - scraping + AI rewriting can take real wall-clock time,
+# and this keeps that entirely off the process actually answering user
+# requests. workflow_dispatch below also allows a manual one-off run from
+# the Actions tab (e.g. right after deploying, or to debug a failure)
+# without needing to touch the schedule.
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+# If a run is still going when the next scheduled trigger fires, queue
+# rather than overlap or cancel - two scrape_all runs writing
+# concurrently isn't dangerous (dedup handles it) but is wasted work.
+concurrency:
+  group: scrape-jobs
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Apply pending DB migrations
+        run: alembic upgrade head
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Run scrapers
+        run: python -m jobs.scrape_all
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Repo *variable* (not secret) - not sensitive, and this way you
+          # can flip AI rewriting on/off from the Actions UI without
+          # editing this file. Defaults to "false" if unset, matching
+          # this project's own current REWRITE_ENABLED default.
+          REWRITE_ENABLED: ${{ vars.REWRITE_ENABLED || 'false' }}
+          ENVIRONMENT: production

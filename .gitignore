@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.pytest_cache/
+scraper_output*.json
+_diag*
+
+# Claude Code local state - settings.local.json auto-records approved
+# commands (including ones containing real secrets typed during a
+# session, e.g. a local DB password passed to psql) and is per-developer,
+# not meant to be shared/committed. Same convention as .env.local.
+.claude/

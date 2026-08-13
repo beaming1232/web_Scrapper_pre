@@ -1,0 +1,36 @@
+name: Health check job links
+
+# Cadence matches config.py's HEALTH_CHECK_CRON_SCHEDULE default
+# (0 3 * * *) - once daily is enough here since this only HEAD-checks
+# already-stored apply_urls and flips is_active=False on dead ones; it
+# doesn't discover anything new, so there's no freshness-window pressure
+# like scrape.yml has. 3am is just "a quiet hour", not load-bearing.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: health-check
+  cancel-in-progress: false
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Deactivate dead apply links
+        run: python -m jobs.health_check
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ENVIRONMENT: production

@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+/* Drive `dark:` off a `.dark` class on <html> instead of Tailwind v4's
+   default `prefers-color-scheme` media query. The media query can't be
+   overridden by the user — it always wins — so a manual light/dark toggle
+   is impossible without this. The class is set before first paint by the
+   inline script in app/layout.tsx. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Maps the Inter variable injected by next/font in app/layout.tsx onto
+   Tailwind's `font-sans`, so the whole app picks it up by default. */
+@theme inline {
+  --font-sans: var(--font-inter);
+}
+
+/* Colour comes from Tailwind utilities on <body> (see app/layout.tsx),
+   not from CSS variables here — keeping one source of truth for theming
+   avoids the two fighting over the background in dark mode. */
+html {
+  scroll-behavior: smooth;
+}
