@@ -49,6 +49,11 @@ If you're picking this repo up somewhere Postgres genuinely isn't set up yet at 
 filter/resolve) can still be run and verified without a database; see "Previewing
 scraper output without Postgres" below.
 
+**This is deployed and live as of 2026-08-14** — see "Deployment" below. The repo root is
+now a real git repo (`beaming1232/web_Scrapper_pre` on GitHub, branch `main`), the stray
+`frontend/.git` nested repo noted at the bottom of the Frontend section has been dealt
+with, and Railway auto-deploys `main` on every push.
+
 AI rewriting is currently **disabled** (`REWRITE_ENABLED=false` in `.env`) — no paid
 Gemini plan yet, and the free-tier key was already hitting `429` quota errors mid-run
 (see git history / the 2026-08-13 scrape: 17 jobs stored, only 10 got a real rewrite
@@ -57,6 +62,55 @@ stored with `rewritten_description=None`, same as any other rewrite failure, and
 `api/`'s `description` field falls back to `description_original` for those rows in the
 meantime. Flip `REWRITE_ENABLED=true` once a paid/higher-quota key is available, then
 backfill the NULL rows rather than re-scraping (see `pipeline/rewriter.py`'s docstring).
+`REWRITE_ENABLED` must be set **per Railway service** too, not just in `.env` — the
+scraper service was found on 2026-08-14 with it `true` and no `GEMINI_API_KEY` set at
+all, and was corrected to `false`; see "Deployment" below.
+
+## Deployment (live since 2026-08-14)
+
+Three moving parts, all deploying from the same GitHub repo
+(`beaming1232/web_Scrapper_pre`, branch `main`):
+
+- **Backend API** — Railway service `web_Scrapper_pre`, always-on web process,
+  `uvicorn api.main:app --host 0.0.0.0 --port $PORT` (from `railway.json`), public at
+  `https://webscrapperpre-production.up.railway.app`. Healthcheck `/health`.
+- **Scraper cron** — Railway service `diplomatic-amazement`, **same repo, separate
+  service**, start command `python -m jobs.scrape_all`, Railway-native Cron Schedule
+  `0 */6 * * *`. It is not a web service: it runs to completion and exits, which is
+  exactly the shape `jobs/scrape_all.py` already had (`asyncio.run(main())`).
+- **Frontend** — Vercel, consuming the Railway API over `API_BASE_URL`.
+
+Non-obvious things about this setup, all learned the hard way:
+
+- **APScheduler is still not used, deliberately.** `requirements.txt` ships it and
+  `jobs/scrape_all.py`'s docstring shows how to wire it, but nothing does — scheduling is
+  Railway's cron feature instead. Don't "finish" that wiring by starting a scheduler
+  inside `api/main.py`'s lifespan: the Read API section's rule that `api/` only ever reads
+  and the pipeline only ever writes is an architecture boundary, and folding them into one
+  process also means a hung scrape can take the live API down with it.
+- **Railway dashboard settings override `railway.json`.** Both services read the same
+  `/railway.json`, so the scraper's `startCommand` and `cronSchedule` live in its
+  dashboard/service settings, *not* in that file — putting `cronSchedule` in
+  `railway.json` would apply it to the API service too. (`startCommand` was removed from
+  `railway.json` for this reason in commit `8e1734f`.)
+- **`railway redeploy` does NOT trigger a cron run.** It only refreshes the build; the
+  instance goes to `CREATED` and never `RUNNING`, and no logs appear. There is no
+  "run cron now" in the CLI (the dashboard has a Run Now button). The genuine CLI
+  equivalent is `railway run -s <service> -- <cmd>`, which pulls that service's real
+  production env vars and runs the command locally against the same Neon DB:
+
+  ```bash
+  railway run -s diplomatic-amazement -- ./.venv/Scripts/python.exe -m jobs.scrape_all
+  ```
+- **Env vars are per-service on Railway and drift from `.env`.** The scraper service was
+  found with `REWRITE_ENABLED=true` but **no `GEMINI_API_KEY` at all** — every rewrite
+  would have failed harmlessly but burned retries per insert. Set to `false` on
+  2026-08-14 to match `.env`/this file. Check both services' vars, not just `.env`, when
+  something behaves differently in production.
+- **Two GitHub accounts are stored in `~/.git-credentials`** (`beaming1232` and
+  `sachinyeole1232`) and git picks the wrong one, failing with `403 ... denied to
+  sachinyeole1232`. Push with the account in the URL:
+  `git push https://beaming1232@github.com/beaming1232/web_Scrapper_pre.git main`.
 
 ## Commands
 
@@ -66,6 +120,10 @@ python -m venv .venv
 ./.venv/Scripts/python.exe -m pip install -r requirements.txt
 
 # Tests (no pytest.ini — plain pytest discovery)
+# NOTE: 5 tests in tests/test_rewriter.py fail on a clean checkout — pre-existing, not
+# your change. REWRITE_ENABLED=false from .env leaks into the test process, so those
+# tests build a disabled rewriter and no HTTP call is made. 88 pass. Fix by having the
+# rewriter tests force enabled=True rather than inheriting settings, if it ever matters.
 ./.venv/Scripts/python.exe -m pytest tests/ -q
 ./.venv/Scripts/python.exe -m pytest tests/test_jobfound.py -v
 ./.venv/Scripts/python.exe -m pytest tests/test_talentd.py -v
@@ -143,6 +201,21 @@ never persisted with the flag set to False.
 slugified title+company+location), secondarily on `resolved_domain` + apply URL path. A
 duplicate updates `scraped_at` and appends to `merged_sources` on the existing row
 rather than inserting a new one.
+  - `find_duplicate()` **must `flush()` before querying** — `db/session.py` sets
+    `autoflush=False`, so rows added earlier in the same batch are still pending and
+    invisible to a plain `SELECT`. Without it, two jobs sharing a fingerprint in one run
+    each miss the other and both get inserted. Don't remove that flush.
+  - The fingerprint lookup uses `.first()` on an ordered query, **not**
+    `scalar_one_or_none()`. Duplicate fingerprints shouldn't exist, but when they did
+    (real rows, 2026-08-13) `scalar_one_or_none()` raised `MultipleResultsFound` and
+    aborted every subsequent run — a permanent poison pill. Merging into the oldest match
+    is the same outcome dedup wants anyway.
+  - Note a real-world case this correctly collapses: jobfound.org republishes the same
+    role on different dates as separate listings with different slugs, different
+    `posted_at`, and *materially different* content (one Fluence "Intern Engineer" pair
+    differed on salary — `2-4 LPA` vs `10-20 LPA` — and description length). Same
+    fingerprint, same apply URL, one real job. When cleaning such a pair up by hand,
+    check both rows' contents first rather than assuming they're carbon copies.
 
 **AI description rewriting** (`pipeline/rewriter.py`) — added to address a real
 copyright/AdSense risk, not a nice-to-have: verbatim scraped `description_original` is
@@ -298,9 +371,56 @@ default `http://127.0.0.1:8000`).
   `has_salary`, `q` — all matched exactly), plus a detail page (200, with Apply/skills/
   similar-jobs/JSON-LD present) and an unknown id (404).
 
-Known loose end: `create-next-app` initialized **a nested git repo at `frontend/.git`**,
-and the repo root is not itself a git repo yet. If the whole project is ever
-`git init`-ed, remove `frontend/.git` first or it becomes an unintended submodule.
+~~Known loose end: nested git repo at `frontend/.git`.~~ **Resolved.** The repo root is
+now a git repo, `frontend/.git` is gone, and `frontend/` is tracked as ordinary files in
+the root repo (31 files) rather than an accidental submodule.
+
+### Source-format drift, and why `fetched=0` is ambiguous (2026-08-14 outage)
+
+**Both sources silently stopped storing anything, and nothing looked broken.** Worth
+reading before debugging "the scraper isn't finding jobs" — the whole failure took a day
+to notice because every symptom pointed the wrong way.
+
+`SourceRunStats.fetched` is `len(source.run())`, i.e. the count *after* normalize. So a
+source whose `normalize()` throws on every record reports `fetched=0` — **byte-for-byte
+identical to a genuinely quiet site**. There is no error, no crash, no non-zero exit, and
+Railway shows a green successful deploy. Do not conclude "the site had nothing new" from
+`fetched=0` alone; confirm against the live site first (see the preview scripts below).
+
+Three distinct bugs, all with that same signature:
+
+1. **talentd changed its JSON-LD field types** (fixed in `6a94e67`).
+   `employmentType` went from `"full-time, remote"` (string) to `["FULL_TIME","INTERN"]`
+   (array); `experienceRequirements` went from `"0-2 years"` (string) to schema.org's
+   `{"@type":"OccupationalExperienceRequirements","monthsOfExperience":0}` (dict). Both
+   raised `TypeError` out of `re.split()`/`re.search()` on *every* listing. Note the dict
+   carries **months, not years** — convert before bucketing or a 24-month role becomes
+   "lead". `normalize()` now accepts both shapes for both fields.
+2. **jobfound dropped `www` from its canonical URLs** (fixed in `709fefb`).
+   `_extract_sitemap_job_urls` hardcoded `https://www\.jobfound\.org/job/` and matched
+   **0 of 2,216** live job URLs once the site canonicalized onto the apex domain — so
+   `fetch()` returned an empty list without downloading a single page. Host is now
+   matched with `www.` optional. `SITEMAP_URL` still points at the `www` host and is
+   fine: it 301s to the apex and `follow_redirects=True` handles it.
+3. **`find_duplicate()` was blind to rows added earlier in the same batch** (fixed in
+   `709fefb`). `db/session.py` builds sessions with `autoflush=False`, so a pending
+   `session.add()` is invisible to a later `SELECT`; two jobs sharing a fingerprint in one
+   run each missed the other and both got inserted. Those rows then made
+   `scalar_one_or_none()` raise `MultipleResultsFound` on every subsequent run — a
+   permanent poison pill that aborted the whole scrape. Now `flush()`es first and reads
+   the oldest match with `first()` instead of raising.
+
+**The guard that hid all of this**: `BaseSource.run()` catches any exception from
+`normalize()` and skips that record, so one bad listing can't sink a run. That guard is
+correct and stays — but it now **logs** the exception (`logger.exception`), because a
+`normalize()` failing on 100% of records must not be able to masquerade as an empty site
+again. If a source reports `fetched=0`, check the logs for that line first.
+
+**Lesson for future source work**: these sites change their payload shape without notice
+and the failure is silent by construction. When a source goes quiet, re-verify the real
+field types against a live page (a throwaway script that calls `fetch()`/`parse()` and
+prints `type(v)` per field is the fastest path — that's how all three were found) before
+assuming the site is just quiet.
 
 ### The `jobfound` source (`scrapers/sources/jobfound.py`)
 
@@ -313,6 +433,11 @@ Non-obvious design decisions, established by direct live-site inspection — don
   this was built — the site's robots.txt has since changed to remove nearly all of its
   custom rules, but the listing page is *still* empty of data regardless of robots, so
   the sitemap approach stands on its own technical merits).
+- **Sitemap `<loc>` URLs are on the apex domain, not `www`** (as of 2026-08-14 — they
+  used to be `www`). `_extract_sitemap_job_urls` matches the host with `www.` optional so
+  either form works; **never re-pin it to one host**. Getting this wrong returns zero
+  URLs, which reads as "quiet site" rather than an error — see the outage section above.
+  Covered by `test_sitemap_extraction_accepts_apex_and_www_hosts`.
 - **Detail pages (`/job/{slug}`) are fully server-rendered** via Next.js React Server
   Components ("Flight") streaming — a JSON payload (`initialJob`) is embedded across
   multiple `self.__next_f.push([1,"..."])` script calls that must be reassembled. Two
@@ -412,14 +537,26 @@ Non-obvious design decisions, established by direct live-site inspection (robots
   most important correctness point in this source, called out explicitly in the module
   docstring and covered by a dedicated regression test
   (`test_apply_url_is_dom_link_not_json_ld_canonical_url`).
-- **`employmentType` can be a comma-separated multi-value string**, not always a single
-  token — found live (not hypothesized) via a real Amazon "Virtual" listing whose raw
-  value was `"full-time, remote"`. `normalize()` splits on `,`/`/` and maps each token
-  independently, taking the first one that matches a canonical `employment_type` value;
-  non-canonical descriptors like `"remote"` are skipped there but still folded into the
-  `is_remote` heuristic. Mapping the whole string as one key (an earlier version of this
-  code did this) produces a garbage compound value like `"full-time,-remote"` — see
-  `test_employment_type_multi_value_string_picks_canonical_token`.
+- **`employmentType` arrives in two different shapes**, and both must keep working:
+  a comma-separated multi-value string (`"full-time, remote"`, found live on a real
+  Amazon "Virtual" listing) **and a JSON array** (`["FULL_TIME"]`,
+  `["FULL_TIME","INTERN"]` — as of 2026-08-14 this is what the site actually sends).
+  `normalize()` flattens an array to that same comma-separated string, then splits on
+  `,`/`/` and maps each token independently, taking the first one that matches a
+  canonical `employment_type` value; non-canonical descriptors like `"remote"` are
+  skipped there but still folded into the `is_remote` heuristic. Mapping the whole string
+  as one key (an earlier version of this code did this) produces a garbage compound value
+  like `"full-time,-remote"`. Assuming it is always a string (an *even earlier* version)
+  raised `TypeError` on every listing and silently killed the source — see the outage
+  section above. Both shapes are covered by
+  `test_employment_type_multi_value_string_picks_canonical_token` and
+  `test_employment_type_json_array_is_handled`.
+- **`experienceRequirements` is schema.org's `OccupationalExperienceRequirements` dict**
+  (`{"@type":..., "monthsOfExperience": 0}`) as of 2026-08-14, not the free-form
+  `"0-2 years"` string it used to be; `_infer_seniority()` handles both. The dict's value
+  is in **months** — it's divided by 12 before bucketing, since reading it as years would
+  file a 24-month role as `"lead"`. See
+  `test_seniority_from_occupational_experience_requirements_dict`.
 - **No structured remote-work field exists at all** (unlike jobfound's `workplaceType`)
   — `is_remote` is always an inferred guess from title/location/slug/employmentType text
   (`"hybrid"` explicitly overrides `"remote"`/`"virtual"` to `False`) and is therefore
