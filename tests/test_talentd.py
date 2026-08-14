@@ -193,6 +193,27 @@ def test_employment_type_multi_value_string_picks_canonical_token():
     assert result["is_remote"] is True
 
 
+def test_employment_type_json_array_is_handled():
+    """Regression test for a real outage: as of 2026-08-14 talentd emits
+    employmentType as a JSON *array* (["FULL_TIME"], ["FULL_TIME","INTERN"])
+    rather than the comma-separated string above. This raised TypeError out
+    of re.split() for every listing, which base.run() swallowed silently —
+    the whole source reported fetched=0 as if the site had nothing new.
+    """
+    assert _normalize({"employmentType": ["FULL_TIME"]})["employment_type"] == "full-time"
+    assert (
+        _normalize({"employmentType": ["FULL_TIME", "INTERN"]})["employment_type"]
+        == "full-time"
+    )
+    # An array carrying only a work-mode descriptor still yields no canonical
+    # employment_type, but its signal must reach is_remote (same contract as
+    # the comma-separated case above).
+    result = _normalize({"employmentType": ["REMOTE"], "title": "Backend Engineer"})
+    assert result["employment_type"] is None
+    assert "employment_type" in result["source_fields_missing"]
+    assert result["is_remote"] is True
+
+
 # --------------------------------------------------------------------------
 # Apply link classification
 # --------------------------------------------------------------------------
@@ -329,6 +350,37 @@ def test_seniority_inferred_from_experience_requirements():
     assert _normalize({"experienceRequirements": "2-4 years"})["seniority"] == "junior"
     assert _normalize({"experienceRequirements": "5-8 years"})["seniority"] == "mid"
     assert _normalize({"experienceRequirements": "8-10 years"})["seniority"] == "senior"
+
+
+def test_seniority_from_occupational_experience_requirements_dict():
+    """Regression test for the same 2026-08-14 breakage as
+    test_employment_type_json_array_is_handled: experienceRequirements is
+    now schema.org's OccupationalExperienceRequirements dict rather than a
+    free-form string, and its value is in *months*, not years — reading it
+    as years would misfile a 24-month role as "lead".
+    """
+    def _exp(months):
+        return {
+            "experienceRequirements": {
+                "@type": "OccupationalExperienceRequirements",
+                "monthsOfExperience": months,
+            }
+        }
+
+    assert _normalize(_exp(0))["seniority"] == "fresher"
+    assert _normalize(_exp(24))["seniority"] == "junior"
+    assert _normalize(_exp(60))["seniority"] == "mid"
+    assert _normalize(_exp(96))["seniority"] == "senior"
+    assert _normalize(_exp(120))["seniority"] == "lead"
+
+    # A dict with no usable months must degrade to the missing-field
+    # convention, not raise.
+    result = _normalize(
+        {"experienceRequirements": {"@type": "OccupationalExperienceRequirements"},
+         "title": "Software Engineer"}
+    )
+    assert result["seniority"] is None
+    assert "seniority" in result["source_fields_missing"]
 
 
 def test_seniority_falls_back_to_fresher_keyword_in_title():

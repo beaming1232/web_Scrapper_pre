@@ -390,6 +390,12 @@ class TalentdSource(BaseSource):
         # "remote" (a work-mode, not one of our employment_type values) are
         # simply skipped here — is_remote picks that signal up separately.
         employment_type_raw = raw_record.get("employmentType") or ""
+        if isinstance(employment_type_raw, list):
+            # Verified live (2026-08-14): the field also arrives as a JSON
+            # array — ["FULL_TIME"], ["FULL_TIME", "INTERN"] — not only as
+            # the comma-separated string above. Flatten to that same string
+            # shape so one code path below handles both.
+            employment_type_raw = ", ".join(str(v) for v in employment_type_raw if v)
         employment_type = None
         for token in re.split(r"[,/]", employment_type_raw):
             key = re.sub(r"[\s_]+", "-", token.strip().lower())
@@ -636,26 +642,44 @@ def _infer_is_remote(title: str, location: str | None, slug: str, *extra_text: s
     return "remote" in combined or "virtual" in combined
 
 
-def _infer_seniority(experience_raw: str | None, title: str) -> str | None:
-    """Infer a canonical seniority bucket from talentd's free-form
-    `experienceRequirements` field (observed shape: "0-2 years"), with a
-    title-keyword fallback for postings that omit experienceRequirements
-    entirely. Same bucket thresholds as jobfound's heuristic — seniority
-    is inherently approximate per the canonical schema either way.
+def _infer_seniority(experience_raw: object | None, title: str) -> str | None:
+    """Infer a canonical seniority bucket from talentd's
+    `experienceRequirements` field, with a title-keyword fallback for
+    postings that omit it entirely. Same bucket thresholds as jobfound's
+    heuristic — seniority is inherently approximate per the canonical
+    schema either way.
+
+    Two shapes occur, both verified live: a free-form string ("0-2 years")
+    and schema.org's OccupationalExperienceRequirements dict
+    ({"@type": ..., "monthsOfExperience": 0}, seen 2026-08-14). The dict
+    carries *months*, so it's converted to years before bucketing —
+    reading it as years would misfile a 24-month role as "lead".
     """
-    if experience_raw:
-        match = re.search(r"\d+", experience_raw)
+    years: int | None = None
+
+    if isinstance(experience_raw, dict):
+        months = experience_raw.get("monthsOfExperience")
+        if isinstance(months, bool):
+            months = None
+        elif isinstance(months, str):
+            months = int(months) if months.strip().isdigit() else None
+        if isinstance(months, (int, float)):
+            years = int(months) // 12
+    elif experience_raw:
+        match = re.search(r"\d+", str(experience_raw))
         if match:
             years = int(match.group())
-            if years == 0:
-                return "fresher"
-            if years <= 2:
-                return "junior"
-            if years <= 5:
-                return "mid"
-            if years <= 8:
-                return "senior"
-            return "lead"
+
+    if years is not None:
+        if years == 0:
+            return "fresher"
+        if years <= 2:
+            return "junior"
+        if years <= 5:
+            return "mid"
+        if years <= 8:
+            return "senior"
+        return "lead"
 
     if title and "fresher" in title.lower():
         return "fresher"

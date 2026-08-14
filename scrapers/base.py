@@ -27,8 +27,11 @@ concerns, so that every source implementation stays focused purely on
 """
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class BaseSource(ABC):
@@ -154,5 +157,15 @@ class BaseSource(ABC):
                 # A source's normalize() must not raise per the contract
                 # above, but we guard here defensively so a bug in one
                 # source can never take down the whole scrape run.
+                #
+                # Log it, though: a normalize() that raises on *every*
+                # record is indistinguishable from "the site had nothing
+                # new" in the run stats (both report fetched=0), which is
+                # exactly how a real talentd breakage went unnoticed for a
+                # day — see the employmentType-as-list handling in
+                # scrapers/sources/talentd.py::normalize.
+                logger.exception(
+                    "%s.normalize() raised; skipping one record", type(self).__name__
+                )
                 continue
         return normalized
