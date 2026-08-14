@@ -12,7 +12,11 @@ from datetime import datetime, timedelta, timezone
 
 from db.models import ApplyType, JobSchema
 from pipeline.filter import apply_external_filter
-from scrapers.sources.jobfound import JobfoundSource, _classify_apply_type
+from scrapers.sources.jobfound import (
+    JobfoundSource,
+    _classify_apply_type,
+    _extract_sitemap_job_urls,
+)
 
 
 def _iso_hours_ago(hours: float) -> str:
@@ -264,3 +268,42 @@ def test_custom_max_job_age_hours_is_respected():
     # 5h-old posting: kept with a 6h window, dropped with a 3h window.
     assert len(JobfoundSource(max_job_age_hours=6).parse([page])) == 1
     assert JobfoundSource(max_job_age_hours=3).parse([page]) == []
+
+
+# --------------------------------------------------------------------------
+# Sitemap URL discovery
+# --------------------------------------------------------------------------
+def test_sitemap_extraction_accepts_apex_and_www_hosts():
+    """Regression test for a real outage: on 2026-08-14 jobfound.org
+    canonicalized its sitemap onto the bare apex domain, so every <loc>
+    became `https://jobfound.org/job/...`. The extractor required `www.`
+    and therefore matched zero of ~2,200 live job URLs — fetch() returned
+    no pages, which is indistinguishable from "nothing posted recently"
+    in the run stats. Both hosts must be accepted.
+    """
+    sitemap = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<url><loc>https://jobfound.org</loc></url>"
+        "<url><loc>https://jobfound.org/india-jobs</loc></url>"
+        "<url><loc>https://jobfound.org/job/acme-is-hiring-for-swe-india</loc></url>"
+        "<url><loc>https://www.jobfound.org/job/legacy-www-listing</loc></url>"
+        "</urlset>"
+    )
+    urls = _extract_sitemap_job_urls(sitemap)
+    assert urls == [
+        "https://jobfound.org/job/acme-is-hiring-for-swe-india",
+        "https://www.jobfound.org/job/legacy-www-listing",
+    ]
+
+
+def test_sitemap_extraction_ignores_non_job_urls():
+    """Only /job/{slug} detail pages are listings; hub/category pages
+    share the same host and must not be walked as if they were jobs.
+    """
+    sitemap = (
+        "<url><loc>https://jobfound.org/remote</loc></url>"
+        "<url><loc>https://jobfound.org/jobs-in-bangalore</loc></url>"
+        "<url><loc>https://jobfound.org/job/real-listing</loc></url>"
+    )
+    assert _extract_sitemap_job_urls(sitemap) == ["https://jobfound.org/job/real-listing"]

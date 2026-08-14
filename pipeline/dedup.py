@@ -70,8 +70,25 @@ async def find_duplicate(session: AsyncSession, job: JobSchema) -> JobModel | No
     """Look up an existing row that matches `job` via fingerprint (primary)
     or resolved_domain+path (secondary). Returns None if no duplicate.
     """
-    stmt = select(JobModel).where(JobModel.fingerprint == job.fingerprint)
-    existing = (await session.execute(stmt)).scalar_one_or_none()
+    # db/session.py builds sessions with autoflush=False, so rows added
+    # earlier in this same batch are still pending and a plain SELECT
+    # cannot see them. Without this flush, two jobs sharing a fingerprint
+    # in one run each look unique and both get inserted — which is exactly
+    # how a real duplicate-fingerprint pair ("Intern Engineer | Fluence |
+    # Bangalore", inserted 1ms apart on 2026-08-13) got into the table.
+    await session.flush()
+
+    # Ordered + first() rather than scalar_one_or_none(): a duplicate
+    # fingerprint is a data-integrity problem, but raising here would
+    # abort the whole run on every future scrape, and the pre-existing
+    # rows above proved that failure mode is reachable. Merging into the
+    # oldest matching row is the same outcome dedup wants anyway.
+    stmt = (
+        select(JobModel)
+        .where(JobModel.fingerprint == job.fingerprint)
+        .order_by(JobModel.scraped_at.asc(), JobModel.id.asc())
+    )
+    existing = (await session.execute(stmt)).scalars().first()
     if existing is not None:
         return existing
 

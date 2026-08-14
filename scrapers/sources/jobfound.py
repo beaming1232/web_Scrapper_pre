@@ -341,8 +341,17 @@ def _extract_sitemap_job_urls(sitemap_xml: str) -> list[str]:
     """Pull every /job/{slug} <loc> entry out of the sitemap, in document
     order (the sitemap does not indicate country, so this is unfiltered —
     parse() drops non-India records after fetching each page).
+
+    The host is matched with `www.` optional, deliberately: as of
+    2026-08-14 the site canonicalized onto the bare apex domain and every
+    <loc> is now `https://jobfound.org/job/...`. Requiring `www.` here
+    silently matched zero of 2,216 job URLs, which fetch() could not tell
+    apart from "the sitemap has nothing recent" — the whole source
+    reported fetched=0 while listings were live on the site.
     """
-    return re.findall(r"<loc>(https://www\.jobfound\.org/job/[^<]+)</loc>", sitemap_xml)
+    return re.findall(
+        r"<loc>(https://(?:www\.)?jobfound\.org/job/[^<]+)</loc>", sitemap_xml
+    )
 
 
 # ==========================================================================
