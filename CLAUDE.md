@@ -93,6 +93,48 @@ Non-obvious things about this setup, all learned the hard way:
   dashboard/service settings, *not* in that file — putting `cronSchedule` in
   `railway.json` would apply it to the API service too. (`startCommand` was removed from
   `railway.json` for this reason in commit `8e1734f`.)
+- **…and removing it left the API service with no start command at all, which broke
+  every new deploy for three days (found 2026-08-16).** `8e1734f` deleted `startCommand`
+  from `railway.json` so the scraper could use its own, but nothing ever set one on the
+  **API** service to replace it — `serviceInstance.startCommand` was `null` there while
+  the scraper's was `python -m jobs.scrape_all`. A service with no start command from
+  *either* source fails **before the build even starts**: status `FAILED`, no
+  `imageDigest`, `diagnosis: null`, and `railway logs -b` says only
+  *"Deployment does not have an associated build"*. There is no useful error message
+  anywhere — this is as silent as the `fetched=0` class of bug.
+
+  What made it invisible for three days: the API stayed **Online the whole time**. A
+  Railway deployment carries a frozen copy of its own config, so the pre-`8e1734f`
+  deployment kept serving with the `startCommand` it was created with. The site was up,
+  `/health` was green — while *every* new deploy silently failed and the live code
+  quietly fell three days behind `main`. **A green service URL does not mean your latest
+  commit is deployed.** Check `railway deployment list -s <svc>` and compare
+  `meta.commitHash` against `git rev-parse HEAD`.
+
+  The fix, and the rule: each service owns its own start command at the service level,
+  mirroring the scraper, so `railway.json` stays neutral and neither service depends on
+  override precedence. Set it with:
+
+  ```bash
+  railway api --raw-var sid=<serviceId> --raw-var eid=<environmentId> \
+    --raw-var cmd='uvicorn api.main:app --host 0.0.0.0 --port $PORT' \
+    'mutation($sid:String!,$eid:String!,$cmd:String!){
+       serviceInstanceUpdate(serviceId:$sid, environmentId:$eid, input:{startCommand:$cmd}) }'
+  ```
+
+  Verify both services in one query before assuming either is configured:
+
+  ```bash
+  railway api --var pid=<projectId> 'query($pid:String!){ project(id:$pid){ services { edges { node {
+    name serviceInstances { edges { node { startCommand cronSchedule } } } } } } } }'
+  ```
+- **Region IDs: the services sit on the legacy `ams` region, and `ams` is not a valid
+  scale target.** `railway service scale` accepts only `eu-west` / `us-west` / `us-east` /
+  `southeast-asia`, yet reports the existing region as `ams` — so `ams=0 eu-west=1` reads
+  as two different regions and briefly configures **two** replicas. Set the new region and
+  zero the old one in the same command, then re-check the printed replica total. The API
+  service is on `eu-west` (Amsterdam) as of 2026-08-16; Neon is in `us-east-2` (Ohio), so
+  every DB round trip still crosses the Atlantic — see the healthcheck section below.
 - **`railway redeploy` does NOT trigger a cron run.** It only refreshes the build; the
   instance goes to `CREATED` and never `RUNNING`, and no logs appear. There is no
   "run cron now" in the CLI (the dashboard has a Run Now button). The genuine CLI
