@@ -623,6 +623,20 @@ Non-obvious design decisions, established by direct live-site inspection (robots
   India-specific by construction. `parse()` still drops a listing if that field is
   present and *not* `"IN"`, but does **not** drop one just because the field is absent —
   absence isn't evidence of being non-Indian on this source.
+- **`fetched=0` on this source is usually legitimate, not drift (checked
+  2026-08-16).** talentd reported `fetched=0` on every cron run for three days
+  straight, which looks exactly like the 2026-08-14 silent-drift outage above.
+  It wasn't. Re-checking the live sitemap the way that section prescribes: the
+  first 31 entries are the category/city hub pages (all `<lastmod>` = now, all
+  dropped structurally as designed), and **the newest real posting was 47.6h
+  old**, with the rest at 50h, 69h, 73h. Zero real entries fell inside
+  `max_job_age_hours=24`, so `fetch()` correctly stopped and stored nothing.
+  The site's actual posting cadence is roughly every 2-3 days, so this source
+  contributing nothing on a given day is its normal steady state — jobfound was
+  inserting fine throughout. Widening the window to ~72h would make talentd
+  productive most days (dedup collapses repeats by fingerprint, so re-seeing old
+  listings is cheap); deliberately left at 24h for now. Confirm against the live
+  sitemap's `<lastmod>` ages before "fixing" this source again.
 - **`employment_type` values beyond `"full-time"` are unconfirmed.** Only `"full-time"`
   has been observed on a real listing; the mapping table's internship/part-time/contract
   entries are best-effort guesses at likely schema.org-style values and are commented as
