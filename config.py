@@ -36,6 +36,30 @@ class Settings(BaseSettings):
     db_echo: bool = Field(default=False, description="Log all SQL statements (debug only).")
     db_pool_size: int = Field(default=5, description="SQLAlchemy connection pool size.")
     db_max_overflow: int = Field(default=10, description="SQLAlchemy pool overflow size.")
+    # The DB is hosted (Neon) and reached over the public internet, so every
+    # setting below exists to bound how long a network problem can hang a
+    # request. Without them a refused/hung connection propagates as an
+    # unbounded wait or a bare 500 - see api/routers/health.py's docstring.
+    db_pool_recycle_seconds: int = Field(
+        default=300,
+        description="Discard pooled connections older than this. Neon's PgBouncer "
+        "endpoint drops idle server-side connections, and a pooled connection that "
+        "died that way otherwise surfaces as a mid-request error.",
+    )
+    db_pool_timeout_seconds: float = Field(
+        default=10.0, description="Max wait for a free connection from the pool."
+    )
+    db_connect_timeout_seconds: float = Field(
+        default=30.0,
+        description="Max time to establish a new asyncpg connection. Neon scales "
+        "compute to zero when idle, so a cold connect is slow but should still be "
+        "bounded rather than open-ended. Measured >5s (and near 10s) on a real cold "
+        "start, so this is deliberately generous - it exists to stop an indefinite "
+        "hang, not to fail fast.",
+    )
+    db_command_timeout_seconds: float = Field(
+        default=30.0, description="Max time for a single asyncpg statement to run."
+    )
 
     # --- Scraping / networking -----------------------------------------
     request_timeout_seconds: float = Field(
@@ -110,6 +134,15 @@ class Settings(BaseSettings):
         "local dev (the API has no auth/cookies for a wildcard to leak); narrow "
         "this to the real frontend origin(s) - e.g. "
         '[\"https://yourdomain.com\"] - before deploying publicly.',
+    )
+    health_db_probe_timeout_seconds: float = Field(
+        default=15.0,
+        description="Max time /health and /health/db spend probing Postgres before "
+        "reporting it unreachable. Bounds the healthcheck so a hung connection "
+        "cannot stall it until Railway's healthcheckTimeout expires. Sits between "
+        "a real Neon cold start (measured >5s) and railway.json's healthcheckTimeout "
+        "(120s), so a merely-cold database reports 'connected' rather than being "
+        "misreported as down.",
     )
 
     # --- Scheduler -------------------------------------------------------
