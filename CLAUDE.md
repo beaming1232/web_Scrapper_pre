@@ -685,6 +685,54 @@ Non-obvious design decisions, established by direct live-site inspection (robots
   such in the code (`_EMPLOYMENT_TYPE_MAP`) — revisit once real postings of those types
   have been sampled.
 
+### Social digest (`social/`, `GET /social/digest`, frontend `/social`)
+
+Turns "jobs stored recently" into one ready-to-post message. Exists to drive traffic
+back to the site — the site earns through AdSense, so a social post is only worth
+making if the click lands *here*.
+
+- **One message, posted verbatim to all three platforms — not one variant each.** This
+  is forced by X, not chosen for convenience: X caps a post at 280 characters and bills
+  **every URL at 23 characters** regardless of real length. A "5 jobs with 5 apply
+  links" post costs ~68 chars per job, i.e. ~370 for five — physically unpostable.
+  Listing job *titles* plus a single link fits in ~200. Measured live: 13 jobs → 249
+  chars. The three platforms also disagree on bold syntax (WhatsApp `*x*`, Telegram
+  `**x**`/HTML, X none), so the text is deliberately **plain, with no markup** —
+  anything else renders as literal asterisks somewhere. Covered by
+  `test_message_is_plain_text_with_no_platform_markup`.
+- **The link always points at our own site, never at the employer's apply page.** A post
+  carrying the direct Workday/Greenhouse URL sends the reader straight past us: no
+  pageview, no ad impression, free marketing for the employer. This is the single
+  decision that makes the feature worth having, and
+  `test_digest_never_contains_an_employer_apply_link` guards it. Don't "help the user"
+  by inlining apply links.
+- **`settings.site_base_url` is not hardcoded** because the site runs on a
+  `.vercel.app` subdomain (no domain budget yet) and must move to a real domain later —
+  **AdSense will not approve a subdomain someone else owns**. One config change has to
+  be enough. Vercel keeps the old `.vercel.app` URL working after a custom domain is
+  added, so already-shared posts won't break.
+- **`build_digest()` returns `None`, not an empty post, when nothing was stored.** A
+  quiet scrape run is normal; "0 new jobs today" isn't worth posting.
+- **Trimming to fit never understates the count**: lines are dropped one at a time until
+  the text fits X's budget, and whatever was dropped becomes a `+N more` line, with the
+  header still reporting the true total.
+- **The window is `scraped_at`-based, not `posted_at`-based** — the question is "what
+  have *we* added since the last post". Since dedup updates `scraped_at` on a re-seen
+  job, a merged duplicate correctly doesn't re-announce.
+- **What is actually automatable, and what isn't**: Telegram has a free Bot API and
+  could post by itself (not built yet). **X's posting API is paid** (~$100/month) and
+  **WhatsApp has no community/broadcast API at all** — those two are copy-paste
+  permanently, which is the whole reason `/social` renders a copy-paste box rather than
+  wiring up posting.
+- **The frontend page has no `"use client"`**, keeping the repo's rule intact. A
+  one-click copy button would have been the first client component in the codebase; a
+  readonly `<textarea>` (click, Ctrl+A, Ctrl+C) gets the same result with no client
+  bundle. It's also `robots: noindex, nofollow` — an operator page must never appear in
+  search results beside the job listings.
+- `social/digest.py` is **pure formatting** — no network, no DB, duck-typed on anything
+  with `.title`/`.company` so it stays independent of both `JobModel` and `JobOut`.
+  `api/routers/social.py` does the reading, and reads only, like the rest of `api/`.
+
 ## Previewing scraper output without Postgres
 
 `_preview_scraper_output.py` (jobfound), `_preview_talentd_output.py` (talentd), and

@@ -135,6 +135,26 @@ class Settings(BaseSettings):
         "this to the real frontend origin(s) - e.g. "
         '[\"https://yourdomain.com\"] - before deploying publicly.',
     )
+
+    # --- Social digest (social/, GET /social/digest) -----------------------
+    site_base_url: str = Field(
+        default="https://web-scrapper-pre.vercel.app",
+        description="Public site URL that social posts link to. Not hardcoded because "
+        "the site is on a .vercel.app subdomain for now (no domain budget yet) and must "
+        "move to a real domain later - AdSense will not approve a subdomain owned by "
+        "someone else. Changing this one value has to be enough to switch every post.",
+    )
+    social_digest_hours: float = Field(
+        default=24.0,
+        description="How far back GET /social/digest looks for jobs to announce. "
+        "Independent of the scrapers' own max_job_age_hours: this is 'what have we "
+        "stored recently worth posting about', not 'how far back should we scrape'.",
+    )
+    social_digest_max_jobs: int = Field(
+        default=5,
+        description="Most job titles to list in one post. The real cap is X's 280-char "
+        "budget (social/digest.py trims to fit); this just bounds it before that.",
+    )
     health_db_probe_timeout_seconds: float = Field(
         default=15.0,
         description="Max time /health and /health/db spend probing Postgres before "

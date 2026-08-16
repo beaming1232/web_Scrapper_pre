@@ -48,6 +48,20 @@ export interface JobList {
   offset: number;
 }
 
+/** Response of GET /social/digest — one message posted verbatim to X,
+ *  WhatsApp and Telegram (see social/digest.py for why not one per platform). */
+export interface SocialDigest {
+  /** null when no jobs were stored in the window — a quiet run is normal. */
+  message: string | null;
+  job_count: number;
+  listed_count: number;
+  /** Length as X counts it, URLs billed at 23 chars. Must be <= 280. */
+  x_character_count: number;
+  fits_x_limit: boolean;
+  window_hours: number;
+  site_url: string;
+}
+
 /** Query parameters accepted by GET /jobs. */
 export interface JobQuery {
   source?: string;

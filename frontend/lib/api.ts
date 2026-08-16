@@ -10,7 +10,7 @@
  * `python -m jobs.scrape_all` runs; a stale cached page would show jobs
  * that have since been deactivated by jobs/health_check.py.
  */
-import type { Job, JobList, JobQuery } from "./types";
+import type { Job, JobList, JobQuery, SocialDigest } from "./types";
 
 const API_BASE_URL = process.env.API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -45,6 +45,23 @@ export async function fetchJobs(query: JobQuery = {}): Promise<JobList> {
     // Most commonly: the FastAPI server isn't running. Surfaced to the
     // page as an explicit "backend unreachable" state rather than an
     // empty job list, so it isn't mistaken for "no jobs matched".
+    throw new ApiError(`Could not reach the API at ${API_BASE_URL}.`);
+  }
+  if (!response.ok) {
+    throw new ApiError(`API returned ${response.status}.`, response.status);
+  }
+  return response.json();
+}
+
+/** The ready-to-post social message for jobs stored in the last `hours`. */
+export async function fetchSocialDigest(hours?: number): Promise<SocialDigest> {
+  const qs = hours === undefined ? "" : `?hours=${hours}`;
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/social/digest${qs}`, {
+      cache: "no-store",
+    });
+  } catch {
     throw new ApiError(`Could not reach the API at ${API_BASE_URL}.`);
   }
   if (!response.ok) {

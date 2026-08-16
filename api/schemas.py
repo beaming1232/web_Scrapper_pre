@@ -75,3 +75,28 @@ class JobListOut(BaseModel):
 class HealthOut(BaseModel):
     status: str
     database: str
+
+
+class SocialDigestOut(BaseModel):
+    """One ready-to-post message, plus the numbers needed to judge it.
+
+    Deliberately a single `message` rather than one field per platform: the
+    same plain text is posted verbatim to X, WhatsApp and Telegram (see
+    social/digest.py for why per-platform variants don't work).
+    """
+
+    message: str | None = Field(
+        default=None,
+        description="Post text, or null when no jobs were stored in the window - "
+        "a quiet run is normal and 'no new jobs' isn't worth posting.",
+    )
+    job_count: int = Field(description="Jobs stored in the window.")
+    listed_count: int = Field(
+        description="How many are named in the message; the rest are '+N more'."
+    )
+    x_character_count: int = Field(
+        description="Length as X counts it (URLs billed at 23 chars). Must be <= 280."
+    )
+    fits_x_limit: bool
+    window_hours: float
+    site_url: str

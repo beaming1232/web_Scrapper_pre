@@ -28,7 +28,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import health, jobs
+from api.routers import health, jobs, social
 from config import settings
 from db.session import dispose_engine
 
@@ -56,3 +56,4 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(jobs.router)
+app.include_router(social.router)
